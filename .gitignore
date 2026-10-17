@@ -1,1 +1,6 @@
 .pio
+.vscode/
+.venv/
+__pycache__/
+include/secrets.h
+server/bpm_log.csv
