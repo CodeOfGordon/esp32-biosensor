@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Heart Rate</title>
+<style>
+  :root { --bg: #fcfcfb; --ink: #0b0b0b; --muted: #52514e; --line: #2a78d6; --pred: #eb6834; --grid: #e6e5e0; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1a1a19; --ink: #f0efec; --muted: #c3c2b7; --line: #3987e5; --pred: #d95926; --grid: #33332f; }
+  }
+  body { background: var(--bg); color: var(--ink); font: 16px system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 24px 16px; }
+  .bpm { font-size: 72px; font-weight: 700; line-height: 1; }
+  .bpm small { font-size: 20px; color: var(--muted); font-weight: 400; }
+  .stats { display: flex; flex-wrap: wrap; gap: 16px 56px; }
+  .label { color: var(--muted); margin-bottom: 6px; }
+  .swatch { display: inline-block; width: 28px; margin-right: 8px; vertical-align: middle; border-top: 4px solid var(--line); }
+  .swatch.predicted { border-top-style: dashed; border-top-color: var(--pred); }
+  .accuracy { font-size: 48px; margin-top: 16px; }
+  .chart { position: relative; height: 320px; margin-top: 20px; }
+</style>
+</head>
+<body>
+  <div class="stats">
+    <div>
+      <div class="label"><span class="swatch"></span>Now</div>
+      <div class="bpm"><span id="bpm">--</span> <small>BPM</small></div>
+    </div>
+    <div>
+      <div class="label"><span class="swatch predicted"></span>Predicted for 10 s from now</div>
+      <div class="bpm"><span id="pred">--</span> <small>BPM</small></div>
+    </div>
+  </div>
+  <div class="bpm accuracy"><span id="accuracy">--</span> <small id="accuracy-note"></small></div>
+  <div class="chart"><canvas id="chart" aria-label="Actual and predicted heart rate over the last two minutes"></canvas></div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+const AHEAD = 10;
+const MIN_CHECKED_PREDICTIONS = 10;
+const CLOSE_ENOUGH = 5;
+
+const css = getComputedStyle(document.documentElement);
+const color = name => css.getPropertyValue(name).trim();
+
+const chart = new Chart(document.getElementById("chart"), {
+  type: "line",
+  data: {
+    labels: [],
+    datasets: [
+      { label: "Actual", data: [], borderColor: color("--line"), borderWidth: 2, pointRadius: 0, tension: 0.3 },
+      { label: "Predicted", data: [], borderColor: color("--pred"), borderWidth: 2, borderDash: [6, 4], pointRadius: 0, tension: 0.3 },
+      { label: "band bottom", data: [], borderWidth: 0, pointRadius: 0, tension: 0.3 },
+      { label: `Counts as accurate (±${CLOSE_ENOUGH} BPM)`, data: [], borderWidth: 0, pointRadius: 0, tension: 0.3, fill: "-1", backgroundColor: color("--pred") + "33" },
+    ],
+  },
+  options: {
+    animation: false,
+    maintainAspectRatio: false,
+    interaction: { mode: "index", intersect: false },
+    plugins: {
+      legend: { labels: { color: color("--muted"), filter: item => item.datasetIndex !== 2 } },
+      tooltip: { filter: item => item.datasetIndex < 2 },
+    },
+    scales: {
+      x: { ticks: { color: color("--muted"), maxTicksLimit: 6 }, grid: { display: false } },
+      y: { suggestedMin: 50, suggestedMax: 120, ticks: { color: color("--muted") }, grid: { color: color("--grid") } },
+    },
+  },
+});
+
+function percentClose(misses) {
+  let close = 0;
+  for (const miss of misses) {
+    if (miss <= CLOSE_ENOUGH) close++;
+  }
+  return Math.round(100 * close / misses.length);
+}
+
+async function refresh() {
+  const rows = await (await fetch("/bpm")).json();
+  const last = rows.at(-1);
+  document.getElementById("bpm").textContent = last ? last.bpm : "--";
+  document.getElementById("pred").textContent = last && last.prediction ? Math.round(last.prediction) : "--";
+
+  const predicted = [];
+  const modelMisses = [];
+  for (let i = 0; i < rows.length; i++) {
+    const madeEarlier = rows[i - AHEAD];
+    const tenSecondsApart = madeEarlier && Math.abs(rows[i].t - madeEarlier.t - AHEAD) <= 2;
+    if (tenSecondsApart && madeEarlier.prediction) {
+      predicted.push(madeEarlier.prediction);
+      modelMisses.push(Math.abs(madeEarlier.prediction - rows[i].bpm));
+    } else {
+      predicted.push(null);
+    }
+  }
+
+  const bandBottom = [];
+  const bandTop = [];
+  for (const p of predicted) {
+    bandBottom.push(p === null ? null : p - CLOSE_ENOUGH);
+    bandTop.push(p === null ? null : p + CLOSE_ENOUGH);
+  }
+
+  if (modelMisses.length >= MIN_CHECKED_PREDICTIONS) {
+    document.getElementById("accuracy").textContent = `${percentClose(modelMisses)}%`;
+    document.getElementById("accuracy-note").textContent = `accuracy (±${CLOSE_ENOUGH} BPM)`;
+  } else {
+    document.getElementById("accuracy").textContent = "--";
+    document.getElementById("accuracy-note").textContent = "accuracy";
+  }
+
+  chart.data.labels = rows.map(r => new Date(r.t * 1000).toLocaleTimeString());
+  chart.data.datasets[0].data = rows.map(r => r.bpm);
+  chart.data.datasets[1].data = predicted;
+  chart.data.datasets[2].data = bandBottom;
+  chart.data.datasets[3].data = bandTop;
+  chart.update();
+}
+
+refresh();
+setInterval(refresh, 1000);
+</script>
+</body>
+</html>
